@@ -21,6 +21,8 @@ from itertools import permutations, combinations
 from tqdm import tqdm
 
 from sklearn import svm, discriminant_analysis, manifold, linear_model
+import sklearn.model_selection as skms
+import sklearn.linear_model as sklm
 import scipy.stats as sts
 import scipy.linalg as la
 
@@ -29,28 +31,32 @@ from cycler import cycler
 
 # my code
 import students
-import assistants
+import assistants as ta
 import experiments as exp
 import util
 import tasks
-import plotting as dicplt
+import plotting as tplt
+import anime as ani
 
 #%%
 
 class Task(object):
-    def __init__(self, num_cols, T_inp, T_resp, T_tot, go_cue=False):
+    def __init__(self, num_cols, T_inp1, T_inp2, T_resp, T_tot, go_cue=False):
         
         self.num_col = num_cols
         
-        self.T_inp = T_inp
+        self.T_inp1 = T_inp1
+        self.T_inp2 = T_inp2
         self.T_resp = T_resp
         self.T_tot = T_tot
         
-    def generate_data(self, n_seq, jitter=3, inp_noise=0.0, dyn_noise=0.0):
+        self.go_cue = go_cue
+        
+    def generate_data(self, n_seq, *seq_args, **seq_kwargs):
         
         upcol, downcol, cue = self.generate_colors(n_seq)
         
-        inps, outs = self.generate_sequences(upcol, downcol, cue, jitter, inp_noise, dyn_noise)
+        inps, outs = self.generate_sequences(upcol, downcol, cue, *seq_args, **seq_kwargs)
         
         return inps, outs, upcol, downcol, cue
         
@@ -64,38 +70,52 @@ class Task(object):
         
         return upcol, downcol, cue
         
-    def generate_sequences(self, upcol, downcol, cue, jitter=3, inp_noise=0.0, dyn_noise=0.0):
+    def generate_sequences(self, upcol, downcol, cue, jitter=3, inp_noise=0.0, dyn_noise=0.0,
+                           new_T=None, retro_only=False, pro_only=False):
         
-        
-        T_inp = self.T_inp
+        T_inp1 = self.T_inp1
+        T_inp2 = self.T_inp2
         T_resp = self.T_resp
-        T = self.T_tot
+        if new_T is None:
+            T = self.T_tot
+        else:
+            T = new_T
         n_seq = len(upcol)
         
         col_inp = np.stack([np.cos(upcol), np.sin(upcol), np.cos(downcol), np.sin(downcol)]).T + np.random.randn(n_seq,4)*inp_noise
-        
         
         cuecol = np.where(cue>0, upcol, downcol)
         uncuecol = np.where(cue>0, downcol, upcol)
         
         cue += np.random.randn(n_seq)*inp_noise
-
-        inps = np.zeros((n_seq,T,6))
+        
+        inps = np.zeros((n_seq, T, 5+1*self.go_cue))
         
         if jitter>0:
-            t_stim = np.random.choice(range(T_inp - jitter, T_inp + jitter), ndat)
+            t_stim1 = np.random.choice(range(T_inp1 - jitter, T_inp1 + jitter), ndat)
+            t_stim2 = np.random.choice(range(T_inp2 - jitter, T_inp2 + jitter), ndat)
             t_targ = np.random.choice(range(T_resp - jitter, T_resp + jitter), ndat)
         else:
-            t_stim = np.ones(n_seq, dtype=int)*(T_inp)
+            t_stim1 = np.ones(n_seq, dtype=int)*(T_inp1)
+            t_stim2 = np.ones(n_seq, dtype=int)*(T_inp2)
             t_targ = np.ones(n_seq, dtype=int)*(T_resp)
         
-        inps[:ndat//2,0,:4] = col_inp[:n_seq//2,:] # retro
-        inps[np.arange(n_seq//2),t_stim[:n_seq//2], 4] = cue[:n_seq//2]
+        if retro_only:
+            inps[np.arange(n_seq),t_stim1,:4] = col_inp # retro
+            inps[np.arange(n_seq),t_stim2, 4] = cue
+        elif pro_only:
+            inps[np.arange(n_seq),t_stim1,4] = cue # pro
+            inps[np.arange(n_seq),t_stim2, :4] = col_inp
+        else:
+            inps[np.arange(n_seq//2),t_stim1[:n_seq//2],:4] = col_inp[:n_seq//2,:] # retro
+            inps[np.arange(n_seq//2),t_stim2[:n_seq//2], 4] = cue[:n_seq//2]
+            
+            inps[np.arange(n_seq//2, n_seq),t_stim1[n_seq//2:],4] = cue[n_seq//2:] # pro
+            inps[np.arange(n_seq//2, n_seq),t_stim2[n_seq//2:], :4] = col_inp[n_seq//2:,:]
         
-        inps[ndat//2:,0,4] = cue[n_seq//2:] # pro
-        inps[np.arange(n_seq//2, n_seq),t_stim[n_seq//2:], :4] = col_inp[n_seq//2:,:]
         
-        inps[:,:,5] = np.random.randn(n_seq,T)*train_z_noise
+        if self.go_cue:
+            inps[np.arange(n_seq),t_targ,5] = 1
         
         # inps = np.zeros((ndat,T,1))
         # inps[np.arange(ndat),t_stim, 0] = cue
@@ -110,34 +130,74 @@ class Task(object):
 
         return inps, outputs
 
+def spline_decoding(data, activity='y', col_keys=('C_u',), cv=20,
+                    cv_type=skms.LeaveOneOut,
+                    model=sklm.Ridge):
+    targ = np.concatenate(list(data[ck] for ck in col_keys), axis=1)
+    pred = data[activity]
+    if cv_type is not None:
+        cv = cv_type()
+    out = skms.cross_validate(model(), pred, targ, cv=cv, return_estimator=True)
+    return out
+
+def convexify(cols, bins):
+    '''
+    cols should be given between 0 and 2 pi, bins also
+    '''
+    
+    dc = 2*np.pi/(len(bins))
+    
+    # get the nearest bin
+    diffs = np.exp(1j*bins)[:,None]/np.exp(1j*cols)[None,:]
+    distances = np.arctan2(diffs.imag,diffs.real)
+    dist_near = np.abs(distances).min(0)
+    nearest = np.abs(distances).argmin(0)
+    # see if the color is to the "left" or "right" of that bin
+    sec_near = np.sign(distances[nearest,np.arange(len(cols))]+1e-8).astype(int) # add epsilon to handle 0
+    # fill in the convex array
+    alpha = np.zeros((len(bins),len(cols)))
+    alpha[nearest, np.arange(len(cols))] = (dc-dist_near)/dc
+    alpha[np.mod(nearest-sec_near,len(bins)), np.arange(len(cols))] = 1 - (dc-dist_near)/dc
+    
+    return alpha
+
 #%%
 
 # TODO: linear reg to get color reps, track over time
 
-N = 100 # network size
+N = 50 # network size
 
-T_inp = 7
-T_resp = 15
-T = 20
+go_cue = True
+# go_cue = False
+
+T_inp1 = 5
+T_inp2 = 15
+T_resp = 25
+T = 35
 
 jitter = 3 # range of input jitter (second input arrives at time t +/- jitter)
 
 ndat = 2000
 
-N_cols = 64
+N_cols = 32
 
 train_noise = 0.0
-train_z_noise = 0.1
+train_z_noise = 0.01
 
 basis = la.qr( np.random.randn(N,N))[0]
 
-task = Task(N_cols, T_inp, T_resp, T)
+task = Task(N_cols, T_inp1, T_inp2, T_resp, T, go_cue=go_cue)
 
 inps, outs, upcol, downcol, cue = task.generate_data(ndat, jitter, train_noise, train_z_noise)
+
+n_in = inps.shape[-1]
+inps = np.concatenate([inps, np.random.randn(ndat, T, N)*train_z_noise], axis=-1)
+
 
 cuecol = np.where(cue>0, upcol, downcol)
 uncuecol = np.where(cue>0, downcol, upcol)
 
+n_out = outs.shape[-1]
 
 inputs = torch.tensor(inps)
 outputs = torch.tensor(outs)
@@ -151,42 +211,42 @@ outputs = torch.tensor(outs)
 
 n_epoch = 5000
 
-swap_prob = 0.15
+swap_prob = 0.0
 
 z_prior = None
 # z_prior = students.GausId(N)
 
-dec = nn.Linear(N, outs.shape[0], bias=True)
-# with torch.no_grad():
-#     dec.weight.copy_( torch.tensor(basis[:,:outs.shape[0]].T).float())
-#     dec.weight.requires_grad = False
+dec = nn.Linear(N, n_out, bias=True)
+with torch.no_grad():
+    dec.weight.copy_( torch.tensor(basis[:,:n_out].T).float())
+    dec.weight.requires_grad = False
 
-rnn = nn.RNN(inputs.shape[-1], N, 1, nonlinearity='relu')
+rnn = nn.RNN(n_in+N, N, 1, nonlinearity='relu')
 
 # net = students.GenericRNN(rnn, students.GausId(outs.shape[0]), fix_decoder=True, decoder=dec, z_dist=z_prior)
-net = students.GenericRNN(rnn, students.GausId(outs.shape[0]), decoder=dec, z_dist=students.GausId(N), beta=0)
+net = students.GenericRNN(rnn, students.GausId(n_out), decoder=dec, z_dist=students.GausId(N), beta=0)
 # net = students.GenericRNN(rnn, students.GausId(outs.shape[0]), fix_decoder=False)
-
 
 # with torch.no_grad():
 #     net.rnn.inp2hid.weight.copy_(torch.tensor(basis[:,:5]).float())
 #     net.rnn.inp2hid.weight.requires_grad = False
 #     net.rnn.inp2hid.bias.requires_grad = False
 with torch.no_grad():
-    inp_w = np.append(basis[:,len(outs):len(outs)+len(inps.T)-1], np.ones((N,1))/np.sqrt(N), axis=-1)
+    inp_w = np.append(basis[:,n_out:n_out+n_in], np.eye(N), axis=-1)
     net.rnn.weight_ih_l0.copy_(torch.tensor(inp_w).float())
     net.rnn.weight_ih_l0.requires_grad = False
     # net.rnn.bias_ih_l0.requires_grad = False
 
 
-n_trn = int(0.8*ndat)   
+n_trn = int(0.8*ndat)
 trn = np.random.choice(ndat,ndat,replace=False)
 tst = np.setdiff1d(range(ndat),trn)
 
 optimizer = optim.Adam(net.parameters(), lr=1e-3)
+# dset = torch.utils.data.TensorDataset(inputs[trn,...].float(),
+#                                       outputs[:,trn,:].float().transpose(0,1))
 dset = torch.utils.data.TensorDataset(inputs[trn,...].float(),
-                                      outputs[:,trn,:].float().transpose(0,1))
-
+                                      outputs[trn,:,:].float())
 # dset = torch.utils.data.TensorDataset(inputs[trn,:,:].float(),
 #                                       outputs[trn,:].float(),
 #                                       torch.tensor(init_torus[:,trn]).float().T)
@@ -196,17 +256,52 @@ n_compute = np.min([len(tst),100])
 
 init_params = list(net.parameters())
 
+train_inputs, _ = task.generate_sequences(upcol, downcol, cue, jitter=0, 
+                                          inp_noise=0, dyn_noise=0, retro_only=True, net_size=N)
+# train_inputs = np.concatenate([train_inputs, np.random.randn(ndat, T, N)*0], axis=-1)
+
+test_inputs, _, tst_upcol, tst_downcol, tst_cue = task.generate_data(ndat, dyn_noise=0, jitter=0, retro_only=True, net_size=N)
+tst_cuecol = np.where(cue>0, tst_upcol, tst_downcol)
+tst_uncuecol = np.where(cue>0, tst_downcol, tst_upcol)
+# test_inputs = np.concatenate([test_inputs, np.random.randn(ndat, T, N)*0], axis=-1)
+
 train_loss = []
-scats = []
+test_loss = []
+scat = []
+swap_scat = []
+tst_scat = []
+tst_swap_scat = []
 for epoch in tqdm(range(n_epoch)):
     loss = net.grad_step(dl, optimizer, init_state=False, only_final=False)
     
     train_loss.append(loss)
     
+    if not np.mod(epoch, 10):
+        z_retro = net(torch.tensor(train_inputs).transpose(1,0).float())
+
+        theta = np.arctan2(z_retro[0][:,1].detach(),z_retro[0][:,0].detach()).numpy()
+        diff = np.arctan2(np.exp(cuecol*1j - theta*1j).imag, np.exp(cuecol*1j - theta*1j).real)
+        
+        scat.append(diff)
+        
+        swap_diff = np.arctan2(np.exp(uncuecol*1j - theta*1j).imag, np.exp(uncuecol*1j - theta*1j).real)
+        swap_scat.append(swap_diff)
+        
+        
+        z_retro = net(torch.tensor(test_inputs).transpose(1,0).float())
+
+        theta = np.arctan2(z_retro[0][:,1].detach(),z_retro[0][:,0].detach()).numpy()
+        diff = np.arctan2(np.exp(tst_cuecol*1j - theta*1j).imag, np.exp(tst_cuecol*1j - theta*1j).real)
+        
+        tst_scat.append(diff)
+        
+        swap_diff = np.arctan2(np.exp(tst_uncuecol*1j - theta*1j).imag, np.exp(tst_uncuecol*1j - theta*1j).real)
+        tst_swap_scat.append(swap_diff)
+        
     # z_retro = net(torch.tensor(fake_inputs).transpose(1,0).float())
     
     # scats.append([z_retro[0][:,0].detach(),z_retro[0][:,1].detach()])
-    
+     
     # running_loss = 0
     # for i, (inp, out) in enumerate(dl):
     #     optimizer.zero_grad()
@@ -214,8 +309,8 @@ for epoch in tqdm(range(n_epoch)):
     #     hid = net.init_hidden(inp.size(0))
     #     pred, _ = net(inp.transpose(0,1), hid)
         
-    #     # swap = np.where(np.random.rand(len(out))<swap_prob)[0]
-    #     # out[swap][...,[0,1,2,3]] = out[swap][...,[2,3,0,1]]
+    #     swap = np.where(np.random.rand(len(out))<swap_prob)[0]
+    #     out[swap][...,[0,1,2,3]] = out[swap][...,[2,3,0,1]]
         
     #     loss = -net.obs.distr(pred).log_prob(out[:,-1,:]).mean()
         
@@ -227,14 +322,20 @@ for epoch in tqdm(range(n_epoch)):
     # train_loss.append(running_loss/(i+1))
 
 #%%
-test_z_noise = 0.0
+test_z_noise = 0.01
 test_inp_noise = 0.0
 
 # fake_inputs = np.zeros((ndat,T,6))
 # fake_inputs[:,0, :4] = col_inp + np.random.randn(ndat,4)*test_inp_noise
 # fake_inputs[:,T//2, 4] = cue
 # fake_inputs[:,:,5] = np.random.randn(ndat,T)*test_z_noise
-fake_inputs, _ = task.generate_sequences(upcol, downcol, cue, jitter=0, inp_noise=test_inp_noise, dyn_noise=test_z_noise)
+# fake_inputs, _ = task.generate_sequences(upcol, downcol, cue, jitter=0, 
+#                                          inp_noise=test_inp_noise, dyn_noise=test_z_noise, retro_only=True)
+fake_inputs, _, upcol, downcol, cue = task.generate_data(ndat, 0, 0, 0, retro_only=True)
+cuecol = np.where(cue>0, upcol, downcol)
+uncuecol = np.where(cue>0, downcol, upcol)
+fake_inputs = np.concatenate([fake_inputs, np.random.randn(ndat, T, N)*test_z_noise], axis=-1)
+
 
 z_retro = net(torch.tensor(fake_inputs).transpose(1,0).float())
 
@@ -252,37 +353,73 @@ plt.legend(['Error to cue', 'Error to swap'])
 plt.subplot(122)
 plt.scatter(z_retro[0][:,0].detach(),z_retro[0][:,1].detach(),c=cuecol,cmap='hsv')
 
-#%%
+# %%
+
+# decode sine and cosine of colors throughout trial
+# train on correct trials test on swap trials
+
+
 cbins = np.unique(cuecol)
 
 up_cue_circ = np.array([z_retro[1][:,(upcol==c)&(cue>0),:].detach().numpy().mean(1) for c in cbins])
-down_cue_circ = np.array([z_retro[1][:,(downcol==c)&(cue>0),:].detach().numpy().mean(1) for c in cbins])
+down_cue_circ = np.array([z_retro[1][:,(downcol==c)&(cue<0),:].detach().numpy().mean(1) for c in cbins])
 
 up_uncue_circ = np.array([z_retro[1][:,(upcol==c)&(cue<0),:].detach().numpy().mean(1) for c in cbins])
-down_unue_circ = np.array([z_retro[1][:,(downcol==c)&(cue<0),:].detach().numpy().mean(1) for c in cbins])
-
+down_unue_circ = np.array([z_retro[1][:,(downcol==c)&(cue>0),:].detach().numpy().mean(1) for c in cbins])
 
 cue_circs = np.concatenate([up_cue_circ, down_cue_circ], axis=0)
+up_circs = np.concatenate([up_cue_circ, up_uncue_circ], axis=0)
 
-U, S = util.pca(cue_circs[task.T_resp:,:,:].reshape((-1,100)).T)
+plot_circs = cue_circs
+# plot_circs = up_circs
 
-proj_z = cue_circs@U[:,:3]
+U, S = util.pca(plot_circs[:,task.T_inp2:task.T_resp,:].reshape((-1,N)).T)
+# U = dec.weight.detach().numpy()[[0,1,4],:].T
+# U = wa['estimator'][0].coef_
 
-ani.ScatterAnime3D(proj_z[...,0],proj_z[...,1],proj_z[...,2], c=np.repeat(cbins,2), cmap='hsv',
-                   rotation_period=100, after_period=50).save(SAVE_DIR+'temp.mp4', fps=10)
+proj_z = plot_circs@U[:,:3]
+# proj_z = util.pca_reduce(wa['estimator'][0].coef_@plot_circs.reshape((-1,100)).T, num_comp=3)
+# proj_z = proj_z.reshape((128, 35, 3))
+
+ani.ScatterAnime3D(proj_z[...,0],proj_z[...,1],proj_z[...,2], c=np.tile(cbins,2), cmap='hsv',
+                   rotation_period=100, after_period=50, view_period=20).save(SAVE_DIR+'temp.mp4', fps=10)
 
 #%%
-fake_inputs = np.zeros((ndat,T,6))
-fake_inputs[:,0, :4] = col_inp
-fake_inputs[:,T//2, 4] = cue
 
+this_col = upcol
+
+z = z_retro[1].transpose(0,1).detach().numpy()
+
+col_lab = np.repeat(np.stack([np.sin(this_col), np.cos(this_col)]).T[:,None], T, axis=1)
+# col_lab = np.repeat(this_col[:,None,None], T, axis=1)
+time_idx = np.repeat(np.arange(T)[None,:], len(this_col), axis=0)
+
+dec = ta.LinearDecoder(N, 2, svm.LinearSVR)
+dec.fit(z, col_lab, t_=time_idx)
+# dec = ta.LinearDecoder(N, 1, ta.VonMisesRegression)
+# dec.fit(z, col_lab, t_=time_idx, orthogonal=True)
+
+
+test_perf = np.zeros((T,T))*np.nan
+for dt in range(T): # all combinations of train/test
+    
+    t_tst = np.roll(np.arange(T), dt)
+    test_time = np.repeat(t_tst[None,:], len(this_col), axis=0)
+    
+    proj = dec.project(z, t_=test_time)
+    test_perf[np.arange(T), t_tst] = np.abs(proj - np.moveaxis(col_lab, -1, 0)).mean((0,1))
+
+
+#%%
+fake_inputs, _ = task.generate_sequences(upcol, downcol, cue, jitter=0, 
+                                         inp_noise=0, dyn_noise=0, retro_only=True)
+fake_inputs = np.concatenate([fake_inputs, np.zeros((ndat, T, N))], axis=-1)
 
 z_retro = net(torch.tensor(fake_inputs).transpose(1,0).float())
 
-fake_inputs = np.zeros((ndat,T,6))
-fake_inputs[:,0, 4] = cue
-fake_inputs[:,T//2, :4] = col_inp
-
+fake_inputs, _ = task.generate_sequences(upcol, downcol, cue, jitter=0, 
+                                         inp_noise=0, dyn_noise=0, pro_only=True)
+fake_inputs = np.concatenate([fake_inputs, np.zeros((ndat, T, N))], axis=-1)
 
 z_pro = net(torch.tensor(fake_inputs).transpose(1,0).float())
 
@@ -298,28 +435,39 @@ pr = np.einsum('tfij,tj->tfi',U2V1**2, l1)
 pp = np.einsum('tfij,tj->tfi',U2V2**2, l2)
 
 #%%
-k=8
+k=4
 
 plt.subplot(2,2,1)
-plt.imshow(rr[...,:k].sum(-1)/l1[:,:k].sum(-1)[:,None], clim=[0,1])
-plt.plot([T//2, T//2], plt.ylim(), 'k--')
-plt.plot(plt.xlim(), [T//2, T//2], 'k--')
+plt.imshow(rr[...,:k].sum(-1)/l1[:,:k].sum(-1)[:,None], clim=[0,1], cmap='binary')
+plt.plot([task.T_inp1, task.T_inp1], plt.ylim(), 'k--')
+plt.plot([task.T_inp2, task.T_inp2], plt.ylim(), 'k-.')
+plt.plot([task.T_resp, task.T_resp], plt.ylim(), 'k:')
+plt.plot(plt.xlim(), [task.T_inp1, task.T_inp1], 'k--')
+plt.plot(plt.xlim(), [task.T_inp2, task.T_inp2], 'k-.')
+plt.plot(plt.xlim(), [task.T_resp, task.T_resp], 'k:')
 
 plt.subplot(2,2,3)
-plt.imshow(pr[...,:k].sum(-1)/l1[:,:k].sum(-1)[:,None], clim=[0,1])
-plt.plot([T//2, T//2], plt.ylim(),'k--')
-plt.plot(plt.xlim(), [T//2, T//2], 'k--')
+plt.imshow(pr[...,:k].sum(-1)/l1[:,:k].sum(-1)[:,None], clim=[0,1], cmap='binary')
+plt.plot([task.T_inp1, task.T_inp1], plt.ylim(), 'k--')
+plt.plot([task.T_inp2, task.T_inp2], plt.ylim(), 'k-.')
+plt.plot([task.T_resp, task.T_resp], plt.ylim(), 'k:')
+plt.plot(plt.xlim(), [task.T_inp1, task.T_inp1], 'k--')
+plt.plot(plt.xlim(), [task.T_inp2, task.T_inp2], 'k-.')
+plt.plot(plt.xlim(), [task.T_resp, task.T_resp], 'k:')
 
 plt.subplot(2,2,4)
-plt.imshow(pp[...,:k].sum(-1)/l2[:,:k].sum(-1)[:,None], clim=[0,1])
-plt.plot([T//2, T//2], plt.ylim() ,'k--')
-plt.plot(plt.xlim(), [T//2, T//2], 'k--')
+plt.imshow(pp[...,:k].sum(-1)/l2[:,:k].sum(-1)[:,None], clim=[0,1], cmap='binary')
+plt.plot([task.T_inp1, task.T_inp1], plt.ylim(), 'k--')
+plt.plot([task.T_inp2, task.T_inp2], plt.ylim(), 'k-.')
+plt.plot([task.T_resp, task.T_resp], plt.ylim(), 'k:')
+plt.plot(plt.xlim(), [task.T_inp1, task.T_inp1], 'k--')
+plt.plot(plt.xlim(), [task.T_inp2, task.T_inp2], 'k-.')
+plt.plot(plt.xlim(), [task.T_resp, task.T_resp], 'k:')
 
 
 #%%
-fake_inputs = np.zeros((ndat,T,6))
-fake_inputs[:,0, :4] = col_inp
-fake_inputs[:,T//2, 4] = cue
+fake_inputs, _ = task.generate_sequences(upcol, downcol, cue, jitter=0, 
+                                         inp_noise=0, dyn_noise=0, retro_only=True)
 
 
 # z = net.transparent_forward(torch.tensor(fake_inputs).transpose(1,0).float(),

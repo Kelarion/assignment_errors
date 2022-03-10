@@ -7,6 +7,8 @@ data {
   vector[K] C_u[T]; // upper color, 2-hot simplex vector
   vector[K] C_l[T]; // lower color, 2-hot simplex vector
   vector[3] p[T]; // probabilities
+  int<lower=1,upper=2> type[T]; // pro or retro tria ... must be all 0 if is_joint = False
+  int<lower=0,upper=1> is_joint; // whether to use two separate simplices
 }
 
 transformed data {
@@ -25,13 +27,13 @@ parameters {
   vector<lower=0>[N] vars;
   vector<lower=0>[N] pr_vars; // prior variances
   // real logits[2]; // log-odds of being a spatial or cue error trial
-  simplex[3] p_err; // probability of a cue, spatial, or no error
+  simplex[3] p_err[is_joint ? 2:1]; // probability of a cue, spatial, or no error
 }
 
 transformed parameters {
   real denom;
   // vector[3] all_logits; 
-  vector[3] log_p_err;
+  vector[3] log_p_err[is_joint ? 2:1];
   // vector<lower=0,upper=1>[3] p_err;
 
   // // log sum exp
@@ -70,7 +72,9 @@ model {
   
   vars ~ inv_gamma(2,1);
   // logits ~ normal(0,1);
-  p_err ~ dirichlet(rep_vector(1.5,3));
+  for (t in 1:size(p_err)){
+    p_err[t] ~ dirichlet(rep_vector(1.5,3));
+  }
 
   // likelihood
   for (n in 1:T) {
@@ -78,13 +82,13 @@ model {
                       + (cue[n]*(normal_lpdf(y[n] | mu_u*C_u[n] + mu_d_l*C_l[n], sqrt(vars))) 
                         + (1-cue[n])*(normal_lpdf(y[n] | mu_l*C_l[n] + mu_d_u*C_u[n], sqrt(vars))));
     // spatial errors
-    lp_swp[1] = log_p_err[1] + (cue[n]*(normal_lpdf(y[n] | mu_u*C_l[n] + mu_d_l*C_u[n], sqrt(vars))) 
+    lp_swp[1] = log_p_err[type[n]][1] + (cue[n]*(normal_lpdf(y[n] | mu_u*C_l[n] + mu_d_l*C_u[n], sqrt(vars))) 
                         + (1-cue[n])*(normal_lpdf(y[n] | mu_l*C_u[n] + mu_d_u*C_l[n], sqrt(vars))));
     // cue errors
-    lp_swp[2] = log_p_err[2] + ((1-cue[n])*(normal_lpdf(y[n] | mu_u*C_u[n] + mu_d_l*C_l[n], sqrt(vars))) 
+    lp_swp[2] = log_p_err[type[n]][2] + ((1-cue[n])*(normal_lpdf(y[n] | mu_u*C_u[n] + mu_d_l*C_l[n], sqrt(vars))) 
                         + cue[n]*(normal_lpdf(y[n] | mu_l*C_l[n] + mu_d_u*C_u[n], sqrt(vars))));
     // no errors
-    lp_swp[3] = log_p_err[3] + (cue[n]*(normal_lpdf(y[n] | mu_u*C_u[n] + mu_d_l*C_l[n], sqrt(vars))) 
+    lp_swp[3] = log_p_err[type[n]][3] + (cue[n]*(normal_lpdf(y[n] | mu_u*C_u[n] + mu_d_l*C_l[n], sqrt(vars))) 
                         + (1-cue[n])*(normal_lpdf(y[n] | mu_l*C_l[n] + mu_d_u*C_u[n], sqrt(vars))));
     // swap errors (spatial and cue)
     lp[2] = log_p[n][2] + log_sum_exp(lp_swp);
@@ -112,13 +116,13 @@ generated quantities{
                         + (cue[n]*(normal_lpdf(y[n] | mu_u*C_u[n] + mu_d_l*C_l[n], sqrt(vars))) 
                         + (1-cue[n])*(normal_lpdf(y[n] | mu_l*C_l[n] + mu_d_u*C_u[n], sqrt(vars))));
     // spatial errors
-    lp_swp[1] = log_p_err[1] + (cue[n]*(normal_lpdf(y[n] | mu_u*C_l[n] + mu_d_l*C_u[n], sqrt(vars))) 
+    lp_swp[1] = log_p_err[type[n]][1] + (cue[n]*(normal_lpdf(y[n] | mu_u*C_l[n] + mu_d_l*C_u[n], sqrt(vars))) 
                         + (1-cue[n])*(normal_lpdf(y[n] | mu_l*C_u[n] + mu_d_u*C_l[n], sqrt(vars))));
     // cue errors
-    lp_swp[2] = log_p_err[2] + ((1-cue[n])*(normal_lpdf(y[n] | mu_u*C_u[n] + mu_d_l*C_l[n], sqrt(vars))) 
+    lp_swp[2] = log_p_err[type[n]][2] + ((1-cue[n])*(normal_lpdf(y[n] | mu_u*C_u[n] + mu_d_l*C_l[n], sqrt(vars))) 
                         + cue[n]*(normal_lpdf(y[n] | mu_l*C_l[n] + mu_d_u*C_u[n], sqrt(vars))));
     // no errors
-    lp_swp[3] = log_p_err[3] + (cue[n]*(normal_lpdf(y[n] | mu_u*C_u[n] + mu_d_l*C_l[n], sqrt(vars))) 
+    lp_swp[3] = log_p_err[type[n]][3] + (cue[n]*(normal_lpdf(y[n] | mu_u*C_u[n] + mu_d_l*C_l[n], sqrt(vars))) 
                         + (1-cue[n])*(normal_lpdf(y[n] | mu_l*C_l[n] + mu_d_u*C_u[n], sqrt(vars))));
     // swap errors (spatial and cue)                    
     lp[2] = log_p[n][2] + log_sum_exp(lp_swp);   
@@ -130,7 +134,7 @@ generated quantities{
     // generative model
 
     trl_type = categorical_rng(p[n]);
-    swp_type = categorical_rng(p_err);
+    swp_type = categorical_rng(p_err[type[n]]);
 
     if (trl_type==1)
     {

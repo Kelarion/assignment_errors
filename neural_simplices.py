@@ -19,6 +19,7 @@ import scipy as sp
 import matplotlib.pyplot as plt
 import matplotlib.ticker as tkr
 import matplotlib.font_manager as mfm
+import matplotlib.tri as tri
 from matplotlib import cm
 import matplotlib.colors as clr
 import scipy.linalg as la
@@ -54,7 +55,7 @@ special_font = mfm.FontProperties(fname='C:/Windows/Fonts/seguiemj.ttf')
 
 #%%
 
-dset_prm = {'session':list(range(13,23)),
+dset_prm = {'session':list(range(23)),
  					'regions':['all'],
  					'tzf': 'WHEEL_ON_diode',
  					'tbeg':-0.5,
@@ -67,11 +68,11 @@ dset_prm = {'session':list(range(13,23)),
  					'shuffle':False,
  					'impute_nan':True,
                     'shuffle_probs':False,
-                    'pro':True,
+                    'which_block':'joint',
  					'impute_params':{'weights':'uniform','n_neighbors':5},
  					'color_weights':'interpolated' # 'softmax'
  					}
-
+    
 ## funky way of iterating over all the parameters in the dictionary
 variable_prms = {k:v for k,v in dset_prm.items() if type(v) is list and k!='session'}
 fixed_prms = {k:v for k,v in dset_prm.items() if type(v) is not list and k!='session'}
@@ -94,7 +95,7 @@ for vals in list(itt.product(*var_v)):
         dset_info = {**this_dset}
         folds = hlp.folder_hierarchy(dset_info) 
     
-        with open(SAVE_DIR+folds+'/arviz_fit_super_hybrid_error_hierarchical_model.pkl', 'rb') as f:
+        with open(SAVE_DIR+folds+'/arviz_fit_ultra_super_hybrid_hierarchical_model.pkl', 'rb') as f:
             az_fit = pkl.load(f)
             
         probs = az_fit.posterior['p_err'].to_numpy()
@@ -117,6 +118,11 @@ col_lab_vals = var_v[:1]
 # row_labs = var_k[:1]
 # row_lab_vals = var_v[:1]
 
+contours = True
+# contours = False
+
+heatmap = True
+# heatmap = False
 
 y_ticks = False
 # y_ticks = True
@@ -128,10 +134,18 @@ xmin = -0.5*np.sqrt(2)
 xmax = 0.5*np.sqrt(2)
 ymin = np.sqrt(6)/3 - np.sqrt(1.5)
 ymax = np.sqrt(6)/3
-xx, yy = np.meshgrid(np.linspace(xmin,xmax,100),np.linspace(ymin,ymax,100))
-foo = (np.stack([xx.flatten(),yy.flatten()]).T@simplx_basis) + [1/3,1/3,1/3]
-support = la.norm(foo,1, axis=-1)<1.001
 
+if contours:
+    xx, yy = np.meshgrid(np.linspace(xmin,xmax,100),np.linspace(ymin,ymax,100))
+    foo = (np.stack([xx.flatten(),yy.flatten()]).T@simplx_basis) + [1/3,1/3,1/3]
+    support = la.norm(foo,1, axis=-1)<1.001
+if heatmap:
+    grid = tri.Triangulation(simplx_basis[0,:], simplx_basis[1,:])
+    grid = tri.UniformTriRefiner(grid).refine_triangulation(subdiv=6)
+    foo = np.stack([grid.x,grid.y])[:,grid.triangles].mean(-1).T@simplx_basis + [1/3,1/3,1/3]
+    msk = la.norm(foo,1, axis=-1)>=1.001
+    grid.set_mask(msk)
+    
 axs = dicplt.hierarchical_labels(row_lab_vals, col_lab_vals,    
                                  row_names=row_labs, col_names=col_labs,
                                  fontsize=13, wmarg=0.3, hmarg=0.1)
@@ -155,20 +169,38 @@ for k, this_prm in enumerate(itt.product(*var_v)):
     else:
         r = 0
     
-    cols = getattr(cm, cmap)(np.arange(len(these_sess))/len(these_sess))
-    for idx, sess in enumerate(these_sess):
-        simp = all_probs[k, idx]
+    if contours:
+        cols = getattr(cm, cmap)(np.arange(len(these_sess))/len(these_sess))
+        for idx, sess in enumerate(these_sess):
+            # simp = all_probs[k, idx]
+            simp = all_probs[k,idx,:,0,:]
+            
+            kd_pdf = sts.gaussian_kde(simp.reshape((-1,2)).T)
+            zz = np.where(support, kd_pdf(np.stack([xx.flatten(),yy.flatten()])), np.nan)
+            
+            if heatmap:
+                axs[r,c].contour(xx,yy,zz.reshape(100,100,order='A'), 2,
+                              colors=['#EC7063','#3498DB'][int(idx>12)], alpha=0.7,
+                              linestyles=['solid','dotted'])
+            else:
+                axs[r,c].contour(xx,yy,zz.reshape(100,100,order='A'), 2,
+                                  colors=clr.to_hex(cols[idx]),
+                                  linestyles=['solid','dotted'])
+            # axs[r,c].contourf(xx,yy,zz.reshape(100,100,order='A'), 2,
+            #                  colors=clr.to_hex(cols[idx]),
+            #                  alpha=0.7)
+    if heatmap:
+        simp = all_probs[k,...,0,:]
+        # simp = all_probs[k]  
         
         kd_pdf = sts.gaussian_kde(simp.reshape((-1,2)).T)
-        zz = np.where(support, kd_pdf(np.stack([xx.flatten(),yy.flatten()])), np.nan)
         
-        axs[r,c].contour(xx,yy,zz.reshape(100,100,order='A'), 2,
-                          colors=clr.to_hex(cols[idx]),
-                          linestyles=['solid','dotted'])
-        # axs[r,c].contourf(xx,yy,zz.reshape(100,100,order='A'), 2,
-        #                  colors=clr.to_hex(cols[idx]),
-        #                  alpha=0.7)
-        axs[r,c].plot([xmin,xmax,0,xmin], [ymin, ymin, ymax, ymin],'#A6ACAF')
+        zz = kd_pdf(np.stack([grid.x,grid.y]))
+        
+        axs[r,c].tripcolor(grid, zz, rasterized=True, cmap='binary')
+    
+    axs[r,c].plot([xmin,xmax,0,xmin], [ymin, ymin, ymax, ymin],'k')
+    # axs[r,c].plot([xmin,xmax,0,xmin], [ymin, ymin, ymax, ymin],'#A6ACAF')
         
     axs[r,c].set_ylim([ymin*1.1,ymax*1.1])
     axs[r,c].set_xlim([xmin*1.1,xmax*1.1])

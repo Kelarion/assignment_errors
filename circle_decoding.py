@@ -232,7 +232,7 @@ pop2, xs = data_single.mask(grp2).get_populations(twindow, tbeg, tend, tstep,
 
 ppop1 = data_single.mask(grp1).make_pseudopop(pop1, comb_n, min_trials, 10, skl_axs=True)
 ppop2 = data_single.mask(grp2).make_pseudopop(pop2, comb_n, min_trials, 10, skl_axs=True)
-    
+
 
 pop1_err, xs = data_single.mask(grp1_err).get_populations(twindow, tbeg, tend, tstep,
                                                    skl_axes=True, repl_nan=repl_nan,
@@ -281,7 +281,8 @@ for p in range(len(ppop)):
     flat_err_test.append(clf.score(flattened_err.T, np.repeat(labels_err, np.sum(cv_perf.mean(0)>0.9))))
 
 
-#%%
+#%% Decode cue
+
 tbeg = -1.5
 tend = 0.2
 twindow = .1
@@ -291,7 +292,8 @@ n_folds = 10
 
 um = data['is_one_sample_displayed'] == 0
 # um = um.rs_and(data['StopCondition'] == 1)
-# um = um.rs_and(data['Block']>1)
+# um = um.rs_and(data['Block']>1) # retrospective 
+um = um.rs_and(data['Block']==1) # prospective
 data_single = data.mask(um)
 
 shuffle = False
@@ -315,7 +317,7 @@ pops, xs = data_single.get_populations(twindow, tbeg, tend, tstep,
                                                    time_zero_field=tzf)
 xs = xs[:int((tend-tbeg)/tstep)+1]
 
-#%%
+#%% train/test comparison 
 
 trn_set = data_single['corr_prob']>0.6
 # tst_set = data_single['StopCondition'] == 1
@@ -401,6 +403,144 @@ dicplt.square_axis()
 plt.plot([0.5,0.5],plt.ylim(), color=(0.5,0.5,0.5), alpha=0.5)
 plt.plot(plt.xlim(),[0.5,0.5], color=(0.5,0.5,0.5), alpha=0.5)
 plt.plot(plt.xlim(),plt.xlim(),'k--')
+plt.xlabel('Training performance (p(correct)>0.6)')
+plt.ylabel('Testing performance (p(swap)>0.4)')
+
+#%% decoding color
+
+tbeg = -0.5
+tend = 0.0
+twindow = .5
+tstep = .5
+n_folds = 10
+
+
+# include single color trials, use only elmo sessions
+
+
+um = data['is_one_sample_displayed'] == 0
+# um = um.rs_and(data['StopCondition'] == 1)
+# um = um.rs_and(data['Block']>1) # retrospective 
+# um = um.rs_and(data['Block']==1) # prospective
+# um = um.rs_and(data['animal'] == 'elmo')
+data_single = data.mask(um)
+
+data_single = data_single.session_mask(data_single['animal'] == 'Elmo')
+
+trn_set = data_single['corr_prob']>0.6
+# tst_set = data_single['StopCondition'] == 1
+tst_set = data_single['swap_prob']>0.4
+# tst_set = data_single['guess_prob']>0.3
+# tst_set = data_single['StopCondition'] == -1
+# tst_set = data_single['corr_prob']>0.5
+# tst_set = data_single['corr_prob']<0.5
+
+shuffle = False
+repl_nan = False
+# tzf = 'SAMPLES_ON_diode'
+# tzf = 'CUE2_ON_diode'
+tzf = 'WHEEL_ON_diode'
+min_trn_trials = 150
+min_tst_trials = 5
+
+pre_pca = .99
+
+# try z-scoring
+# try pca
+# heirarchical
+# try only visual (v4) neurons
+# pseudopop
+# num_pop = data_single.n_sessions
+# num_pop = 10 
+
+# binarize color-
+# gaussian process
+
+this_col = data_single['LABthetaTarget']
+# this_col = data_single['upper_color']
+
+num_bins = 6
+
+bins = np.linspace(0, 2*np.pi, num_bins+1)[:-1]
+
+   
+ntrls_trn = []
+ntrls_tst = []
+masks = []
+for i in range(num_bins):
+    msk =  (np.cos(this_col - bins[i])) > np.cos(np.pi/(num_bins))
+    ntrls_trn.append(data_single.mask(msk.rs_and(trn_set)).get_ntrls())
+    ntrls_tst.append(data_single.mask(msk.rs_and(tst_set)).get_ntrls())
+    masks.append(msk)
+
+comb_n_trn = gio.combine_ntrls(*ntrls_trn)
+comb_n_tst = gio.combine_ntrls(*ntrls_tst)
+
+pops_trn = []
+pops_tst = []
+for i in range(num_bins):    
+    pop, xs = data_single.mask(masks[i].rs_and(trn_set)).get_populations(twindow, tbeg, tend, tstep,
+                                                       skl_axes=False,
+                                                       time_zero_field=tzf)
+    
+    pop_tst, xs = data_single.mask(masks[i].rs_and(tst_set)).get_populations(twindow, tbeg, tend, tstep,
+                                                       skl_axes=False,
+                                                       time_zero_field=tzf)
+    
+    # ppop = data_single.mask(masks[i].rs_and(trn_set)).make_pseudopop(pop, comb_n, min_trials, 10, skl_axs=False)
+    ppop_trn, ppop_tst = data_single.make_pseudopop_with_test(pop, pop_tst, comb_n_trn, comb_n_tst, 
+                                                              min_trn_trials, min_tst_trials, 10, skl_axs=False)
+    
+    pops_trn.append(ppop_trn)
+    pops_tst.append(ppop_tst)
+
+    # pops.append(ppop)
+    
+all_pops_trn = np.concatenate(pops_trn, axis=1)[...,:int((tend-tbeg)/tstep)+1].sum(-1)
+all_pops_tst = np.concatenate(pops_tst, axis=1)[...,:int((tend-tbeg)/tstep)+1].sum(-1)
+
+all_col_trn = np.concatenate([np.repeat(b, p.shape[1]) for b,p in zip(bins,pops_trn)])
+all_col_tst = np.concatenate([np.repeat(b, p.shape[1]) for b,p in zip(bins,pops_tst)])
+
+
+trn_labs = np.stack([np.cos(all_col_trn), np.sin(all_col_trn)])
+tst_labs = np.stack([np.cos(all_col_tst), np.sin(all_col_tst)])
+
+#%%
+
+z_trn = []
+z_tst = []
+
+for z1, z2 in zip(all_pops_trn, all_pops_tst):
+    
+    z_both = np.concatenate([z1,z2], axis=0).T
+    
+    # imput missing values
+    impute = (helpers.box_conv(z_both==0, 50)==50).max(0)
+    trash = impute.mean(1) > 0.5
+    z_both = z_both[~trash,:]
+    impute = impute[~trash,:]
+    imptr = knni()
+    z_both = imptr.fit_transform(np.where(impute,np.nan,z_both).T).T
+
+    # pca
+    z_both = util.pca_reduce(z_both, 0.95)
+    
+    # z-score
+    z_both -= z_both.mean(0)
+    z_both /= z_both.std(0)
+    
+    z_trn.append(z_both[:len(z1)])
+    z_tst.append(z_both[len(z1):])
+
+
+
+# clf = ta.LinearDecoder(z_trn[0].shape[1], 2, svm.LinearSVR)
+
+# clf.fit(all_pops_trn[0], trn_labs.T)
+
+
+
 
 
 

@@ -86,37 +86,38 @@ these_dsets = []
 # 					'color_weights':'interpolated' # 'softmax'
 # 					})
 
-# these_dsets.append({'these_sess':list(range(23)),
-# 					'regions':['all'],
-# 					'tzf':'CUE2_ON_diode',
-# 					'tbeg':-0.5,
-# 					'twindow':0.5,
-# 					'tstep':0.5,
-# 					'num_bins':6,
-# 					'do_pca':'before', #'after'
-# 					'pca_thrs':0.95,
-# 					'min_trials':40,
-# 					'shuffle':False,
-# 					'impute_nan':True,
-# 					'shuffle_probs':False,
-# 					'impute_params':{'weights':'uniform','n_neighbors':5},
-# 					'color_weights':'interpolated' # 'softmax'
-# 					})
-
-these_dsets.append({'these_sess':list(range(23)),
+these_dsets.append({'these_sess':list(range(23)), # delay period 1
 					'regions':['all'],
-					'tzf':'WHEEL_ON_diode',
+					'tzf':'CUE2_ON_diode',
 					'tbeg':-0.5,
 					'twindow':0.5,
 					'tstep':0.5,
-					'num_bins':6,
+					'num_bins':[4,5,6],
 					'do_pca':'before', #'after'
 					'pca_thrs':0.95,
 					'min_trials':40,
 					'shuffle':False,
 					'impute_nan':True,
 					'shuffle_probs':False,
-					'pro':[True,False],
+					'which_block':'retro',
+					'impute_params':{'weights':'uniform','n_neighbors':5},
+					'color_weights':'interpolated' # 'softmax'
+					})
+
+these_dsets.append({'these_sess':list(range(23)), ## delay period 2
+					'regions':['all'],
+					'tzf':'WHEEL_ON_diode',
+					'tbeg':-0.5,
+					'twindow':0.5,
+					'tstep':0.5,
+					'num_bins':[4,5,6],
+					'do_pca':'before', #'after'
+					'pca_thrs':0.95,
+					'min_trials':40,
+					'shuffle':False,
+					'impute_nan':True,
+					'shuffle_probs':False,
+					'which_block':['pro','retro','joint'],
 					'impute_params':{'weights':'uniform','n_neighbors':5},
 					'color_weights':'interpolated' # 'softmax'
 					})
@@ -125,8 +126,9 @@ these_models = []
 # these_models.append(['null_hierarchical','spatial_error_hierarchical','cue_error_hierarchical',
 # 				'hybrid_error_hierarchical', 'super_hybrid_error_hierarchical'])
 # these_models.append(['null_precue','spatial_error_precue','hybrid_error_precue'])
-these_models.append(['super_hybrid_error_hierarchical','spatial_error_hierarchical','cue_error_hierarchical'])
-# these_models.append(['hybrid_error_precue'])
+# these_models.append(['super_hybrid_error_hierarchical','spatial_error_hierarchical','cue_error_hierarchical'])
+these_models.append(['hybrid_error_precue'])
+these_models.append(['ultra_super_hybrid_hierarchical'])
 
 ### Assemble stan data dicts
 ##############################
@@ -182,7 +184,6 @@ if these_dsets != old_prms:
 			um = um.rs_and(data['corr_prob']<2) # avoid nan trials
 			data_single = data.mask(um)
 
-			n = data_single.get_ntrls()
 			pop, xs = data_single.get_populations(twindow, tbeg, tend, tstep,
 			                                      skl_axes=True, repl_nan=False,
 			                                      time_zero_field=this_dset['tzf'])
@@ -195,19 +196,42 @@ if these_dsets != old_prms:
 				print('Assembling population %d, %d ...'%(i_dst,idx))
 
 				x = pop[which_sess].sum(-1).reshape((pop[which_sess].shape[0],-1))
+				# print(x.shape)
 				in_area = np.isin(data_single['neur_regions'][which_sess].values[0], regions[this_dset['regions']])
 				x = x[in_area, :]
+				# print(x.shape)
+
+				# select pro or retro 
+				if this_dset['which_block'] == 'pro':
+					these_trials = (data_single['Block'])[which_sess].array.to_numpy()==1
+					trl_msk = data_single['Block']==1
+					trial_type = np.ones(np.sum(these_trials), dtype=int)
+				elif this_dset['which_block'] == 'retro':
+					these_trials = (data_single['Block'])[which_sess].array.to_numpy()>1
+					trl_msk = data_single['Block']>1
+					trial_type = np.ones(np.sum(these_trials), dtype=int)
+				elif this_dset['which_block'] == 'joint':
+					these_trials = (data_single['Block'])[which_sess].array.to_numpy()>0
+					trl_msk = data_single['Block']>0
+					trial_type = (data_single['Block'][which_sess].array.to_numpy()==1).astype(int) + 1
+
+				if this_dset['tzf'] == 'CUE2_ON_diode':
+					x = x[:,these_trials]
+					these_trials = these_trials[these_trials]
+					trial_type = trial_type[these_trials]
 
 				# deal with missing timepoints
 				if impute_nan:
 					impute = (helpers.box_conv(x==0, 50)==50).max(0)
 					trash = impute.mean(1) > 0.5
+					# print(np.sum(trash))
+					# print((x==0).mean(1))
+					# print(x)
 					x = x[~trash,:]
 					impute = impute[~trash,:]
 					imptr = knni(**impute_params)
-					x = imptr.fit_transform(np.where(impute,np.nan,x))
-				num_neur = x.shape[0]
-
+					x = imptr.fit_transform(np.where(impute,np.nan,x).T).T
+				# print(x.shape)
 				# z-score
 				if do_pca == 'before':
 					x = util.pca_reduce(x, thrs=pca_thrs)
@@ -217,14 +241,7 @@ if these_dsets != old_prms:
 
 				if do_pca == 'after':
 					x = util.pca_reduce(x, thrs=pca_thrs)
-
-				# select pro or retro
-				if this_dset['pro']:
-					these_trials = (data_single['Block'])[which_sess].array.to_numpy()==1
-					trl_msk = data_single['Block']==1
-				else:
-					these_trials = (data_single['Block'])[which_sess].array.to_numpy()>1
-					trl_msk = data_single['Block']>1
+				
 				x = x[these_trials, :]
 				sess_data = data_single.mask(trl_msk)
 
@@ -248,7 +265,7 @@ if these_dsets != old_prms:
 					probs = probs[np.random.permutation(len(probs)),:]
 
 				stan_data = dict(T=x.shape[0], N=x.shape[-1], K=num_bins, y=x, C_u=c_u, C_l=c_l, 
-					cue=cue, p=probs, num_neur=num_neur)
+					cue=cue, p=probs, type=trial_type, is_joint=int(np.any(trial_type>1)))
 
 				dset_info = {'session':which_sess, 'stan_data':stan_data, **this_dset}
 				pkl.dump(dset_info, open(SAVE_DIR+'server_cache/dataset_%d_%d.pkl'%(i_dst,idx),'wb'))
