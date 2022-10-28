@@ -9,6 +9,7 @@ import scipy.io as sio
 from sklearn import svm, manifold, linear_model
 from sklearn.model_selection import cross_val_score as cv_score
 import sklearn.kernel_approximation as kaprx
+from sklearn.preprocessing import SplineTransformer
 
 
 class Task(object):
@@ -102,41 +103,74 @@ class Task(object):
         return inps, outputs
 
 
-def convexify(cols, bins):
-    '''
-    cols should be given between 0 and 2 pi, bins also
-    '''
-    
-    dc = 2*np.pi/(len(bins))
-    
-    # get the nearest bin
-    diffs = np.exp(1j*bins)[:,None]/np.exp(1j*cols)[None,:]
-    distances = np.arctan2(diffs.imag,diffs.real)
-    dist_near = np.abs(distances).min(0)
-    nearest = np.abs(distances).argmin(0)
-    # see if the color is to the "left" or "right" of that bin
-    sec_near = np.sign(distances[nearest,np.arange(len(cols))]+1e-8).astype(int) # add epsilon to handle 0
-    # fill in the convex array
-    alpha = np.zeros((len(bins),len(cols)))
-    alpha[nearest, np.arange(len(cols))] = (dc-dist_near)/dc
-    alpha[np.mod(nearest-sec_near,len(bins)), np.arange(len(cols))] = 1 - (dc-dist_near)/dc
-    
-    return alpha
+class Convexify:
+    def __init__(self):
+        self.__name__ = 'interpolated'
 
-def softmax_cols(cols, bins):
-    '''
-    cols should be given between 0 and 2 pi, bins also
-    '''
-    
-    num_bins = len(bins)
-    dc = 2*np.pi/num_bins
-    
-    # get the nearest bin
-    diffs = np.exp(1j*bins)[:,None]/np.exp(1j*cols)[None,:]
-    distances = np.arctan2(diffs.imag,diffs.real)
-    alpha = np.exp(np.abs(distances))/np.exp(np.abs(distances)).sum(0)
-    
-    return alpha
+    def __call__(self, cols, num_bins):
+        '''
+        cols should be given between 0 and 2 pi, bins also
+        '''
+
+        bins = np.linspace(0,2*np.pi,num_bins+1)[:num_bins]
+        
+        dc = 2*np.pi/num_bins
+        
+        # get the nearest bin
+        diffs = np.exp(1j*bins)[:,None]/np.exp(1j*cols)[None,:]
+        distances = np.arctan2(diffs.imag,diffs.real)
+        dist_near = np.abs(distances).min(0)
+        nearest = np.abs(distances).argmin(0)
+        # see if the color is to the "left" or "right" of that bin
+        sec_near = np.sign(distances[nearest,np.arange(len(cols))]+1e-8).astype(int) # add epsilon to handle 0
+        # fill in the convex array
+        alpha = np.zeros((len(bins),len(cols)))
+        alpha[nearest, np.arange(len(cols))] = (dc-dist_near)/dc
+        alpha[np.mod(nearest-sec_near,len(bins)), np.arange(len(cols))] = 1 - (dc-dist_near)/dc
+        
+        alpha = alpha[:-1,:]
+        alpha -= alpha.mean(1, keepdims=True)
+
+        return alpha
+
+class Splines:
+    def __init__(self, degree=1):
+        self.degree = degree
+
+        self.__name__ = f'spline{degree}'
+
+    def __call__(self, cols, num_bins):
+
+        spl = SplineTransformer(n_knots=num_bins+1, degree=self.degree, 
+                                extrapolation='periodic', include_bias=False)
+
+        # print(cols[:,None])
+        spl.fit(np.linspace(0, 2*np.pi, 65)[:,None])
+        cntrs = spl.transform(np.linspace(0, 2*np.pi, 64)[:,None])
+
+        alpha = spl.transform(cols[:,None])
+
+        return (alpha - cntrs.mean(0)).T
+
+
+class SoftmaxCols:
+    def __init__(self):
+        self.__name__ = 'softmax'
+
+    def __call__(self, cols, num_bins):
+        '''
+        cols should be given between 0 and 2 pi, bins also
+        '''
+        
+        bins = np.linspace(0,2*np.pi,num_bins+1)[:num_bins]
+        dc = 2*np.pi/num_bins
+        
+        # get the nearest bin
+        diffs = np.exp(1j*bins)[:,None]/np.exp(1j*cols)[None,:]
+        distances = np.arctan2(diffs.imag,diffs.real)
+        alpha = np.exp(np.abs(distances))/np.exp(np.abs(distances)).sum(0)
+        
+        return alpha
 
 
 def box_conv(X, len_filt):
@@ -165,7 +199,7 @@ def folder_hierarchy(dset_info):
         '{tbeg}-{tend}-{twindow}_{tstep}/'
         'pca_{pca_thrs}_{do_pca}/'
         'impute_{impute_nan}/'
-        '{color_weights}_knots/'
+        '{color_weights.__name__}_knots/'
         '{regions}/'
         '{which_block}/')
     if dset_info['shuffle_probs']:

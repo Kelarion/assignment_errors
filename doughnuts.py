@@ -45,7 +45,7 @@ import plotting as dicplt
 
 #%%
 
-ndat = 100
+ndat = 50
 nneur = 300
 
 c_up = np.repeat(np.linspace(0,2*np.pi,ndat), ndat) # upper color

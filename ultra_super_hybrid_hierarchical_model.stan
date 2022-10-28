@@ -7,7 +7,7 @@ data {
   vector[K] C_u[T]; // upper color, 2-hot simplex vector
   vector[K] C_l[T]; // lower color, 2-hot simplex vector
   vector[3] p[T]; // probabilities
-  int<lower=1,upper=2> type[T]; // pro or retro tria ... must be all 0 if is_joint = False
+  int<lower=1,upper=2> type[T]; // pro or retro tria ... must be all 1 if is_joint = False
   int<lower=0,upper=1> is_joint; // whether to use two separate simplices
 }
 
@@ -31,7 +31,7 @@ parameters {
 }
 
 transformed parameters {
-  real denom;
+  // real denom;
   // vector[3] all_logits; 
   vector[3] log_p_err[is_joint ? 2:1];
   // vector<lower=0,upper=1>[3] p_err;

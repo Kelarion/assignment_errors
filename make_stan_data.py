@@ -92,7 +92,7 @@ these_dsets.append({'these_sess':list(range(23)), # delay period 1
 					'tbeg':-0.5,
 					'twindow':0.5,
 					'tstep':0.5,
-					'num_bins':[5,6],
+					'num_bins':5,
 					'do_pca':'before', #'after'
 					'pca_thrs':0.95,
 					'min_trials':40,
@@ -104,20 +104,38 @@ these_dsets.append({'these_sess':list(range(23)), # delay period 1
 					'color_weights': [helpers.Splines(1)] # 'softmax'
 					})
 
+# these_dsets.append({'these_sess':list(range(23)), ## delay period 2
+# 					'regions':'all',
+# 					'tzf':'WHEEL_ON_diode',
+# 					'tbeg':-0.5,
+# 					'twindow':0.5,
+# 					'tstep':0.5,
+# 					'num_bins':[5,6],
+# 					'do_pca':'before', #'after'
+# 					'pca_thrs':0.95,
+# 					'min_trials':40,
+# 					'shuffle':False,
+# 					'impute_nan':True,
+# 					'shuffle_probs':False,
+# 					'which_block':['pro','retro'],
+# 					'impute_params':{'weights':'uniform','n_neighbors':5},
+# 					'color_weights': helpers.Splines(1) # 'softmax'
+# 					})
+
 these_dsets.append({'these_sess':list(range(23)), ## delay period 2
 					'regions':'all',
 					'tzf':'WHEEL_ON_diode',
 					'tbeg':-0.5,
 					'twindow':0.5,
 					'tstep':0.5,
-					'num_bins':[5,6],
+					'num_bins':5,
 					'do_pca':'before', #'after'
 					'pca_thrs':0.95,
 					'min_trials':40,
 					'shuffle':False,
 					'impute_nan':True,
 					'shuffle_probs':False,
-					'which_block':['pro','retro'],
+					'which_block':['pro','retro','single'],
 					'impute_params':{'weights':'uniform','n_neighbors':5},
 					'color_weights': helpers.Splines(1) # 'softmax'
 					})
@@ -183,8 +201,7 @@ if these_dsets != old_prms:
 
 
 			# pro and retro trials together
-			um = data['is_one_sample_displayed'] == 0
-			um = um.rs_and(data['corr_prob']<2) # avoid nan trials
+			um = data['corr_prob']<2 # avoid nan trials
 			data_single = data.mask(um)
 
 			pop, xs = data_single.get_populations(twindow, tbeg, tend, tstep,
@@ -205,17 +222,25 @@ if these_dsets != old_prms:
 				# print(x.shape)
 
 				# select pro or retro 
+				no_single = (data_single['is_one_sample_displayed'])[which_sess].array.to_numpy() == 0
 				if this_dset['which_block'] == 'pro':
-					these_trials = (data_single['Block'])[which_sess].array.to_numpy()==1
+					these_trials = no_single&((data_single['Block'])[which_sess].array.to_numpy()==1)
 					trl_msk = data_single['Block']==1
+					trl_msk = trl_mask.rs_and(data_single['is_one_sample_displayed'] == 0)
 					trial_type = np.ones(np.sum(these_trials), dtype=int)
 				elif this_dset['which_block'] == 'retro':
-					these_trials = (data_single['Block'])[which_sess].array.to_numpy()>1
+					these_trials = no_single&((data_single['Block'])[which_sess].array.to_numpy()>1)
 					trl_msk = data_single['Block']>1
+					trl_msk = trl_mask.rs_and(data_single['is_one_sample_displayed'] == 0)
 					trial_type = np.ones(np.sum(these_trials), dtype=int)
 				elif this_dset['which_block'] == 'joint':
-					these_trials = (data_single['Block'])[which_sess].array.to_numpy()>0
+					these_trials = no_single&((data_single['Block'])[which_sess].array.to_numpy()>0)
 					trl_msk = data_single['Block']>0
+					trl_msk = trl_mask.rs_and(data_single['is_one_sample_displayed'] == 0)
+					trial_type = (data_single['Block'][which_sess].array.to_numpy()==1).astype(int) + 1
+				elif this_dset['which_block'] == 'single':
+					these_trials = (data_single['is_one_sample_displayed'])[which_sess].array.to_numpy()>0
+					trl_msk = data_single['is_one_sample_displayed'] > 0
 					trial_type = (data_single['Block'][which_sess].array.to_numpy()==1).astype(int) + 1
 
 				if this_dset['tzf'] == 'CUE2_ON_diode':
@@ -256,6 +281,7 @@ if these_dsets != old_prms:
 				yup = sess_data['upper_color'][which_sess].array.to_numpy()
 				ylow = sess_data['lower_color'][which_sess].array.to_numpy()
 				cue = sess_data['IsUpperSample'][which_sess].array.to_numpy()
+				resp = sess_data['LABthetaResp'][which_sess].array.to_numpy()
 
 				# bins = np.linspace(0,2*np.pi,num_bins+1)[:num_bins]
 
@@ -272,7 +298,7 @@ if these_dsets != old_prms:
 
 				stan_data = dict(T=x.shape[0], N=x.shape[-1], K=int(c_u.shape[1]), y=x, C_u=c_u, C_l=c_l, 
 					cue=cue, p=probs, type=trial_type, is_joint=int(np.any(trial_type>1)), 
-					up_col_rads=yup, down_col_rads=ylow)
+					up_col_rads=yup, down_col_rads=ylow, resp=resp)
 
 				dset_info = {'session':which_sess, 'stan_data':stan_data, **this_dset}
 				pkl.dump(dset_info, open(SAVE_DIR+'server_cache/dataset_%d_%d.pkl'%(i_dst,idx),'wb'))
@@ -305,26 +331,26 @@ for i_dst, dset_models in enumerate(these_models):
 			remote=REMOTE_SYNC_SERVER+':'+REMOTE_RESULTS)
 		subprocess.check_call(cmd, shell=True)
 
-		cmd = 'rsync {local}*.pkl {remote} -v'.format(local=CODE_DIR + 'assignment_errors/',
-			remote=REMOTE_SYNC_SERVER+':'+REMOTE_CODE)
-		subprocess.check_call(cmd, shell=True)
+		# cmd = 'rsync {local}*.pkl {remote} -v'.format(local=CODE_DIR + 'assignment_errors/',
+		# 	remote=REMOTE_SYNC_SERVER+':'+REMOTE_CODE)
+		# subprocess.check_call(cmd, shell=True)
 
-	####### Run job array
-	###########################################
-	# n_sess = len(these_dsets[i_dst]['these_sess'])*len(list(itt.product(*var_v)))
-	n_sess = np.prod([len(v) for k,v in these_dsets[i_dst].items() if type(v) is list])
-	n_mod = len(dset_models)
+	# ####### Run job array
+	# ###########################################
+	# # n_sess = len(these_dsets[i_dst]['these_sess'])*len(list(itt.product(*var_v)))
+	# n_sess = np.prod([len(v) for k,v in these_dsets[i_dst].items() if type(v) is list])
+	# n_mod = len(dset_models)
 
-	print('\nSending %d jobs to server ...\n'%(n_sess*n_mod))
+	# print('\nSending %d jobs to server ...\n'%(n_sess*n_mod))
 
-	# update file to have correct array indices
-	tmplt_file = open(CODE_DIR+'assignment_errors/job_script_template.sh','r')
-	with open(SAVE_DIR+'server_cache/job_script_%d.sh'%i_dst,'w') as script_file:
-		sbatch_text = tmplt_file.read().format(n_tot=n_sess*n_mod - 1, n_dat=n_sess, dset_idx=i_dst, file_dir=REMOTE_CODE)
-		script_file.write(sbatch_text)
-	tmplt_file.close()
+	# # update file to have correct array indices
+	# tmplt_file = open(CODE_DIR+'assignment_errors/job_script_template.sh','r')
+	# with open(SAVE_DIR+'server_cache/job_script_%d.sh'%i_dst,'w') as script_file:
+	# 	sbatch_text = tmplt_file.read().format(n_tot=n_sess*n_mod - 1, n_dat=n_sess, dset_idx=i_dst, file_dir=REMOTE_CODE)
+	# 	script_file.write(sbatch_text)
+	# tmplt_file.close()
 
-	## run job
-	if 'columbia' in REMOTE_SYNC_SERVER:
-		cmd = "ssh ma3811@ginsburg.rcs.columbia.edu 'sbatch -s' < {}".format(SAVE_DIR+'server_cache/job_script_%d.sh'%i_dst)
-		subprocess.call(cmd, shell=True)
+	# ## run job
+	# if 'columbia' in REMOTE_SYNC_SERVER:
+	# 	cmd = "ssh ma3811@ginsburg.rcs.columbia.edu 'sbatch -s' < {}".format(SAVE_DIR+'server_cache/job_script_%d.sh'%i_dst)
+	# 	subprocess.call(cmd, shell=True)

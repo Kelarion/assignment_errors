@@ -63,15 +63,19 @@ data = gio.Dataset.from_readfunc(swa.load_buschman_data, BASE_DIR, max_files=np.
 
 #%%
 tbeg = -.5
-tend = 1
+tend = 0
 twindow = .5
-tstep = .05
+tstep = .5
 n_folds = 10
 num_bins = 16
 
 um = data['StopCondition'] == 1 
 um = um.rs_and(data['is_one_sample_displayed'] == 0)
 um = um.rs_and(data['Block']>1)
+
+# um = um.rs_and(data['swap_prob']<0.6)
+# um = um.rs_and(data['IsUpperSample'])
+
 data_single = data.mask(um)
 
 shuffle = False
@@ -98,15 +102,15 @@ xs = xs[:int((tend-tbeg)/tstep)+1]
 
 c1_n = data_single.mask(col1).get_ntrls()
 c2_n = data_single.mask(col2).get_ntrls()
-comb_n = data_single.combine_ntrls(c1_n, c2_n)
+comb_n = gio.combine_ntrls(c1_n, c2_n)
 
 # [np.isin(data_single.mask(col1)['neur_regions'][i].values[0], 'v4pit'),...]
 these_pop = [pop1[i] for i in range(len(pop1))]
-ppop1, labs1 = data_single.mask(col1).make_pseudopop(these_pop, comb_n, min_trials, 10, skl_axs=True)
+ppop1 = data_single.mask(col1).make_pseudopop(these_pop, comb_n, min_trials, 10, skl_axs=True)
 
 # [np.isin(data_single.mask(col2)['neur_regions'][i].values[0], 'v4pit'),...]
 these_pop = [pop2[i] for i in range(len(pop2))]
-ppop2, labs2 = data_single.mask(col2).make_pseudopop(these_pop, comb_n, min_trials, 10, skl_axs=True)
+ppop2 = data_single.mask(col2).make_pseudopop(these_pop, comb_n, min_trials, 10, skl_axs=True)
 
 cv_perf = na.fold_skl(ppop1[0], ppop2[0], 
                       n_folds, model=svm.LinearSVC, params={'class_weight':'balanced'}, 
@@ -420,9 +424,10 @@ n_folds = 10
 
 um = data['is_one_sample_displayed'] == 0
 # um = um.rs_and(data['StopCondition'] == 1)
-# um = um.rs_and(data['Block']>1) # retrospective 
+um = um.rs_and(data['Block']>1) # retrospective 
 # um = um.rs_and(data['Block']==1) # prospective
 # um = um.rs_and(data['animal'] == 'elmo')
+um = um.rs_and(data['IsUpperSample'])
 data_single = data.mask(um)
 
 data_single = data_single.session_mask(data_single['animal'] == 'Elmo')
@@ -438,9 +443,9 @@ tst_set = data_single['swap_prob']>0.4
 shuffle = False
 repl_nan = False
 # tzf = 'SAMPLES_ON_diode'
-# tzf = 'CUE2_ON_diode'
-tzf = 'WHEEL_ON_diode'
-min_trn_trials = 150
+tzf = 'CUE2_ON_diode'
+# tzf = 'WHEEL_ON_diode'
+min_trn_trials = 80
 min_tst_trials = 5
 
 pre_pca = .99
@@ -456,10 +461,10 @@ pre_pca = .99
 # binarize color-
 # gaussian process
 
-this_col = data_single['LABthetaTarget']
-# this_col = data_single['upper_color']
+# this_col = data_single['LABthetaTarget']
+this_col = data_single['upper_color']
 
-num_bins = 6
+num_bins = 2
 
 bins = np.linspace(0, 2*np.pi, num_bins+1)[:-1]
 
